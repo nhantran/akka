@@ -37,7 +37,7 @@ object AeronSink {
           n = 0
           localMsgSize = -1
           onOfferSuccess.invoke(())
-          println(s"# AeronSink delegated task done after $n") // FIXME
+          //          println(s"# AeronSink delegated task done after $n") // FIXME
           true
         } else {
           // FIXME drop after too many attempts?
@@ -97,7 +97,7 @@ class AeronSink(channel: String, streamId: Int, aeron: Aeron, taskRunner: TaskRu
             publish() // recursive
           } else {
             // delegate backoff to shared TaskRunner
-            println(s"# AeronSink delegate backoff") // FIXME
+            //            println(s"# AeronSink delegate backoff") // FIXME
             lastMsgSizeRef.set(lastMsgSize)
             taskRunner.command(addOfferTask)
           }

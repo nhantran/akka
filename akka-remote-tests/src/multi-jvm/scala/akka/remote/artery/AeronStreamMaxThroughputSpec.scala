@@ -179,7 +179,8 @@ abstract class AeronStreamMaxThroughputSpec
           rep.onMessage(1, bytes.length)
           count += 1
 
-          val n = new String(bytes, "utf-8").toLong
+          val s = new String(bytes, "utf-8")
+          val n = s.substring(0, s.indexOf('/')).toInt
           if (failed)
             println(s"# $n") // FIXME
           else if (n != count) {
@@ -212,7 +213,7 @@ abstract class AeronStreamMaxThroughputSpec
       val payload = ("0" * payloadSize).getBytes("utf-8")
       val t0 = System.nanoTime()
       Source.fromIterator(() ⇒ iterate(1, totalMessages))
-        .map { n ⇒ (("0" * payloadSize) + n).getBytes("utf-8") }
+        .map { n ⇒ (n + "/" + payload).getBytes("utf-8") }
         .runWith(new AeronSink(channel(second), streamId, aeron, taskRunner))
 
       printStats("sender")
