@@ -172,11 +172,21 @@ abstract class AeronStreamMaxThroughputSpec
       var count = 0L
       val done = TestLatch(1)
       val killSwitch = KillSwitches.shared(testName)
+      var failed = false
       Source.fromGraph(new AeronSource(channel(second), streamId, aeron, taskRunner))
         .via(killSwitch.flow)
         .runForeach { bytes ⇒
           rep.onMessage(1, bytes.length)
           count += 1
+
+          val n = new String(bytes, "utf-8").toLong
+          if (failed)
+            println(s"# $n") // FIXME
+          else if (n != count) {
+            println(s"missing $count, got $n")
+            failed
+          }
+
           if (count == 1) {
             t0 = System.nanoTime()
           } else if (count == totalMessages) {
@@ -202,7 +212,7 @@ abstract class AeronStreamMaxThroughputSpec
       val payload = ("0" * payloadSize).getBytes("utf-8")
       val t0 = System.nanoTime()
       Source.fromIterator(() ⇒ iterate(1, totalMessages))
-        .map { n ⇒ payload }
+        .map { n ⇒ (("0" * payloadSize) + n).getBytes("utf-8") }
         .runWith(new AeronSink(channel(second), streamId, aeron, taskRunner))
 
       printStats("sender")

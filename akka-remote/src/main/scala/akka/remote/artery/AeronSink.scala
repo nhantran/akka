@@ -37,10 +37,11 @@ object AeronSink {
           n = 0
           localMsgSize = -1
           onOfferSuccess.invoke(())
+          println(s"# AeronSink delegated task done after $n") // FIXME
           true
         } else {
           // FIXME drop after too many attempts?
-          if (n > 1000000 && n % 100000 == 0)
+          if (n > 100000 && n % 10000 == 0)
             println(s"# offer not accepted after $n") // FIXME
           false
         }
@@ -96,6 +97,7 @@ class AeronSink(channel: String, streamId: Int, aeron: Aeron, taskRunner: TaskRu
             publish() // recursive
           } else {
             // delegate backoff to shared TaskRunner
+            println(s"# AeronSink delegate backoff") // FIXME
             lastMsgSizeRef.set(lastMsgSize)
             taskRunner.command(addOfferTask)
           }

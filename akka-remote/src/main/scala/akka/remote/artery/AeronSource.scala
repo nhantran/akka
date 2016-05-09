@@ -33,7 +33,12 @@ object AeronSource {
         val fragmentsRead = sub.poll(handler.fragmentsHandler, 1)
         val msg = handler.messageReceived
         handler.reset() // for GC
+
+        if (fragmentsRead < 0)
+          println(s"# fragmentsRead $fragmentsRead") // FIXME
+
         if (msg ne null) {
+          println(s"# AeronSource delegated task done") // FIXME
           onMessage.invoke(msg)
           true
         } else
@@ -101,6 +106,10 @@ class AeronSource(channel: String, streamId: Int, aeron: Aeron, taskRunner: Task
         val fragmentsRead = sub.poll(messageHandler.fragmentsHandler, 1)
         val msg = messageHandler.messageReceived
         messageHandler.reset() // for GC
+
+        if (fragmentsRead < 0)
+          println(s"# fragmentsRead $fragmentsRead") // FIXME
+
         if (fragmentsRead > 0) {
           if (msg ne null)
             onMessage(msg)
@@ -114,6 +123,7 @@ class AeronSource(channel: String, streamId: Int, aeron: Aeron, taskRunner: Task
             subscriberLoop() // recursive
           } else {
             // delegate backoff to shared TaskRunner
+            println(s"# AeronSource delegate backoff") // FIXME
             taskRunner.command(addPollTask)
           }
         }
