@@ -126,6 +126,19 @@ private[akka] final class AssociationState(
       case _ ⇒ this
     }
 
+  def isQuarantined(): Boolean = {
+    // FIXME we should optimize access to uniqueRemoteAddress.value (avoid allocations), used in many places
+    uniqueRemoteAddressPromise.future.value match {
+      case Some(Success(a)) ⇒ isQuarantined(a.uid)
+      case _                ⇒ false // handshake not completed yet
+    }
+  }
+
+  def isQuarantined(uid: Long): Boolean = {
+    // FIXME does this mean boxing (allocation) because of Set[Long]? Use specialized Set. LongMap?
+    quarantined(uid)
+  }
+
   override def toString(): String = {
     val a = uniqueRemoteAddressPromise.future.value match {
       case Some(Success(a)) ⇒ a

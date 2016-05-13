@@ -25,6 +25,7 @@ import akka.util.Unsafe
 import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import akka.actor.ActorSelectionMessage
 
 /**
  * INTERNAL API
@@ -110,19 +111,23 @@ private[akka] class Association(
     outboundControlIngress.sendControlMessage(message)
 
   def send(message: Any, senderOption: Option[ActorRef], recipient: RemoteActorRef): Unit = {
-    // TODO: lookup subchannel
-    // FIXME: Use a different envelope than the old Send, but make sure the new is handled by deadLetters properly
-    message match {
-      case _: SystemMessage ⇒
-        implicit val ec = materializer.executionContext
-        controlQueue.offer(Send(message, senderOption, recipient, None)).onFailure {
-          case e ⇒
-            // FIXME proper error handling, and quarantining
-            println(s"# System message dropped, due to $e") // FIXME
-        }
-      case _ ⇒
-        queue.offer(Send(message, senderOption, recipient, None))
-    }
+    // allow ActorSelectionMessage to pass through quarantine, to be able to establish interaction with new system
+    // FIXME where is that ActorSelectionMessage check in old remoting?
+    if (message.isInstanceOf[ActorSelectionMessage] || !associationState.isQuarantined()) {
+      // FIXME: Use a different envelope than the old Send, but make sure the new is handled by deadLetters properly
+      message match {
+        case _: SystemMessage ⇒
+          implicit val ec = materializer.executionContext
+          controlQueue.offer(Send(message, senderOption, recipient, None)).onFailure {
+            case e ⇒
+              // FIXME proper error handling, and quarantining
+              println(s"# System message dropped, due to $e") // FIXME
+          }
+        case _ ⇒
+          queue.offer(Send(message, senderOption, recipient, None))
+      }
+    } else if (log.isDebugEnabled)
+      log.debug("Dropping message to quarantined system {}", remoteAddress)
   }
 
   // FIXME we should be able to Send without a recipient ActorRef

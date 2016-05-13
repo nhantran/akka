@@ -47,8 +47,8 @@ object RemoteRestartedQuarantinedSpec extends MultiNodeConfig {
 
   def aeronPort(roleName: RoleName): Int =
     roleName match {
-      case `first`  ⇒ 20531 // TODO yeah, we should have support for dynamic port assignment
-      case `second` ⇒ 20532
+      case `first`  ⇒ 20541 // TODO yeah, we should have support for dynamic port assignment
+      case `second` ⇒ 20542
     }
 
   nodeConfig(first) {

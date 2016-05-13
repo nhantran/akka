@@ -28,8 +28,7 @@ private[akka] class InboundQuarantineCheck(inboundContext: InboundContext) exten
       override def onPush(): Unit = {
         val env = grab(in)
         val association = inboundContext.association(env.originAddress.address)
-        // FIXME does this mean boxing (allocation) because of Set[Long]? Use specialized Set. LongMap?
-        if (association.associationState.quarantined(env.originAddress.uid)) {
+        if (association.associationState.isQuarantined(env.originAddress.uid)) {
           inboundContext.sendControl(env.originAddress.address, Quarantined)
           pull(in)
         } else
