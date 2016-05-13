@@ -3,17 +3,24 @@
  */
 package akka.remote.artery
 
+import java.io.File
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.function.{ Function ⇒ JFunction }
+
 import scala.concurrent.Future
+import scala.concurrent.Promise
 import scala.concurrent.duration._
+import scala.util.Failure
+import scala.util.Success
+
 import akka.Done
 import akka.NotUsed
 import akka.actor.ActorRef
 import akka.actor.Address
 import akka.actor.ExtendedActorSystem
 import akka.actor.InternalActorRef
+import akka.actor.Props
 import akka.event.Logging
 import akka.event.LoggingAdapter
 import akka.remote.AddressUidExtension
@@ -22,8 +29,10 @@ import akka.remote.MessageSerializer
 import akka.remote.RemoteActorRef
 import akka.remote.RemoteActorRefProvider
 import akka.remote.RemoteTransport
+import akka.remote.SeqNo
 import akka.remote.UniqueAddress
 import akka.remote.artery.InboundControlJunction.ControlMessageSubject
+import akka.remote.artery.OutboundControlJunction.OutboundControlIngress
 import akka.remote.transport.AkkaPduCodec
 import akka.remote.transport.AkkaPduProtobufCodec
 import akka.serialization.Serialization
@@ -46,8 +55,6 @@ import io.aeron.driver.MediaDriver
 import io.aeron.exceptions.ConductorServiceTimeoutException
 import org.agrona.ErrorHandler
 import org.agrona.IoUtil
-import java.io.File
-import akka.remote.artery.OutboundControlJunction.OutboundControlIngress
 
 /**
  * INTERNAL API
@@ -56,7 +63,8 @@ private[akka] final case class InboundEnvelope(
   recipient: InternalActorRef,
   recipientAddress: Address,
   message: AnyRef,
-  senderOption: Option[ActorRef])
+  senderOption: Option[ActorRef],
+  originAddress: UniqueAddress)
 
 /**
  * INTERNAL API
@@ -71,7 +79,7 @@ private[akka] trait InboundContext {
 
   /**
    * An inbound stage can send control message, e.g. a reply, to the origin
-   * address with this method.
+   * address with this method. It will be sent over the control sub-channel.
    */
   def sendControl(to: Address, message: ControlMessage): Unit
 
@@ -79,6 +87,26 @@ private[akka] trait InboundContext {
    * Lookup the outbound association for a given address.
    */
   def association(remoteAddress: Address): OutboundContext
+}
+
+final class AssociationState(
+  val incarnation: Int,
+  val uniqueRemoteAddressPromise: Promise[UniqueAddress]) {
+
+  /**
+   * Full outbound address with UID for this association.
+   * Completed when by the handshake.
+   */
+  def uniqueRemoteAddress: Future[UniqueAddress] = uniqueRemoteAddressPromise.future
+
+  override def toString(): String = {
+    val a = uniqueRemoteAddressPromise.future.value match {
+      case Some(Success(a)) ⇒ a
+      case Some(Failure(e)) ⇒ s"Failure(${e.getMessage})"
+      case None             ⇒ "unknown"
+    }
+    s"AssociationState($incarnation, $a)"
+  }
 }
 
 /**
@@ -97,17 +125,15 @@ private[akka] trait OutboundContext {
    */
   def remoteAddress: Address
 
-  /**
-   * Full outbound address with UID for this association.
-   * Completed when by the handshake.
-   */
-  def uniqueRemoteAddress: Future[UniqueAddress]
+  def associationState: AssociationState
+
+  def completeHandshake(peer: UniqueAddress): Unit
 
   /**
-   * Set the outbound address with UID when the
-   * handshake is completed.
+   * An inbound stage can send control message, e.g. a HandshakeReq, to the remote
+   * address of this association. It will be sent over the control sub-channel.
    */
-  def completeRemoteAddress(a: UniqueAddress): Unit
+  def sendControl(message: ControlMessage): Unit
 
   /**
    * An outbound stage can listen to control messages
@@ -135,7 +161,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   @volatile private[this] var driver: MediaDriver = _
   @volatile private[this] var aeron: Aeron = _
 
-  override val log: LoggingAdapter = Logging(system.eventStream, getClass.getName)
+  override val log: LoggingAdapter = Logging(system, getClass.getName)
   override def defaultAddress: Address = localAddress.address
   override def addresses: Set[Address] = Set(defaultAddress)
   override def localAddressForRemote(remote: Address): Address = defaultAddress
@@ -273,9 +299,8 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     }
   }
 
-  override def quarantine(remoteAddress: Address, uid: Option[Int]): Unit = {
-    ???
-  }
+  override def quarantine(remoteAddress: Address, uid: Option[Int]): Unit =
+    association(remoteAddress).quarantine(uid)
 
   def outbound(outboundContext: OutboundContext): Sink[Send, Any] = {
     Flow.fromGraph(killSwitch.flow[Send])
@@ -295,6 +320,9 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
       .to(new AeronSink(outboundChannel(outboundContext.remoteAddress), controlStreamId, aeron, taskRunner))
   }
 
+  // FIXME hack until real envelopes, encoding originAddress in sender :)
+  private val dummySender = system.systemActorOf(Props.empty, "dummy")
+
   // TODO: Try out parallelized serialization (mapAsync) for performance
   val encoder: Flow[Send, ByteString, NotUsed] = Flow[Send].map { sendEnvelope ⇒
     val pdu: ByteString = codec.constructMessage(
@@ -303,8 +331,8 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
       Serialization.currentTransportInformation.withValue(Serialization.Information(localAddress.address, system)) {
         MessageSerializer.serialize(system, sendEnvelope.message.asInstanceOf[AnyRef])
       },
-      sendEnvelope.senderOption,
-      seqOption = None, // FIXME: Acknowledgements will be handled differently I just reused the old codec
+      if (sendEnvelope.senderOption.isDefined) sendEnvelope.senderOption else Some(dummySender), // FIXME: hack until real envelopes
+      seqOption = Some(SeqNo(localAddress.uid)), // FIXME: hack until real envelopes
       ackOption = None)
 
     // TODO: Drop unserializable messages
@@ -330,14 +358,15 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
         m.recipient,
         m.recipientAddress,
         MessageSerializer.deserialize(system, m.serializedMessage),
-        m.senderOption)
+        if (m.senderOption.get.path.name == "dummy") None else m.senderOption, // FIXME hack until real envelopes
+        UniqueAddress(m.senderOption.get.path.address, m.seq.rawValue.toInt)) // FIXME hack until real envelopes
     }
 
   val inboundFlow: Flow[ByteString, ByteString, NotUsed] = {
     Flow.fromSinkAndSource(
       decoder
         .via(deserializer)
-        .via(new InboundHandshake(this))
+        .via(new InboundHandshake(this, inControlStream = false))
         .to(messageDispatcherSink),
       Source.maybe[ByteString].via(killSwitch.flow))
   }
@@ -346,9 +375,9 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     Flow.fromSinkAndSourceMat(
       decoder
         .via(deserializer)
-        .via(new InboundHandshake(this))
-        .via(new SystemMessageAcker(this))
+        .via(new InboundHandshake(this, inControlStream = true))
         .viaMat(new InboundControlJunction)(Keep.right)
+        .via(new SystemMessageAcker(this))
         .to(messageDispatcherSink),
       Source.maybe[ByteString].via(killSwitch.flow))((a, b) ⇒ a)
   }
