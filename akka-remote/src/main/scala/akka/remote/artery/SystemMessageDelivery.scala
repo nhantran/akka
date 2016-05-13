@@ -43,7 +43,8 @@ private[akka] object SystemMessageDelivery {
  */
 private[akka] class SystemMessageDelivery(
   outboundContext: OutboundContext,
-  resendInterval: FiniteDuration)
+  resendInterval: FiniteDuration,
+  maxBufferSize: Int)
   extends GraphStage[FlowShape[Send, Send]] {
 
   import SystemMessageDelivery._
@@ -152,15 +153,19 @@ private[akka] class SystemMessageDelivery(
       override def onPush(): Unit = {
         grab(in) match {
           case s @ Send(msg: AnyRef, _, _, _) ⇒
-            seqNo += 1
-            val sendMsg = s.copy(message = SystemMessageEnvelope(msg, seqNo, localAddress))
-            // FIXME quarantine if unacknowledged is full
-            unacknowledged.offer(sendMsg)
-            if (resending.isEmpty && isAvailable(out))
-              push(out, sendMsg)
-            else {
-              resending.offer(sendMsg)
-              tryResend()
+            if (unacknowledged.size < maxBufferSize) {
+              seqNo += 1
+              val sendMsg = s.copy(message = SystemMessageEnvelope(msg, seqNo, localAddress))
+              unacknowledged.offer(sendMsg)
+              if (resending.isEmpty && isAvailable(out))
+                push(out, sendMsg)
+              else {
+                resending.offer(sendMsg)
+                tryResend()
+              }
+            } else {
+              // buffer overflow
+              outboundContext.quarantine(reason = s"System message delivery buffer overflow, size [$maxBufferSize]")
             }
         }
       }

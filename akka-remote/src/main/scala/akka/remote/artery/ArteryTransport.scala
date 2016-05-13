@@ -169,6 +169,8 @@ private[akka] trait OutboundContext {
 
   def completeHandshake(peer: UniqueAddress): Unit
 
+  def quarantine(reason: String): Unit
+
   /**
    * An inbound stage can send control message, e.g. a HandshakeReq, to the remote
    * address of this association. It will be sent over the control sub-channel.
@@ -357,7 +359,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
     eventPublisher.notifyListeners(event)
 
   override def quarantine(remoteAddress: Address, uid: Option[Int]): Unit =
-    association(remoteAddress).quarantine(uid)
+    association(remoteAddress).quarantine(reason = "", uid) // FIXME change the method signature (old remoting) to include reason?
 
   def outbound(outboundContext: OutboundContext): Sink[Send, Any] = {
     Flow.fromGraph(killSwitch.flow[Send])
@@ -370,7 +372,7 @@ private[remote] class ArteryTransport(_system: ExtendedActorSystem, _provider: R
   def outboundControl(outboundContext: OutboundContext): Sink[Send, OutboundControlIngress] = {
     Flow.fromGraph(killSwitch.flow[Send])
       .via(new OutboundHandshake(outboundContext, handshakeTimeout))
-      .via(new SystemMessageDelivery(outboundContext, systemMessageResendInterval))
+      .via(new SystemMessageDelivery(outboundContext, systemMessageResendInterval, remoteSettings.SysMsgBufferSize))
       .viaMat(new OutboundControlJunction(outboundContext))(Keep.right)
       .via(encoder)
       .map(_.toArray) // TODO we should use ByteString all the way

@@ -69,6 +69,10 @@ private[akka] class TestOutboundContext(
     }
   }
 
+  override def quarantine(reason: String): Unit = synchronized {
+    _associationState = _associationState.newQuarantined()
+  }
+
   override def sendControl(message: ControlMessage) = {
     controlProbe.foreach(_ ! message)
     controlSubject.sendControl(InboundEnvelope(null, remoteAddress, message, None, localAddress))
