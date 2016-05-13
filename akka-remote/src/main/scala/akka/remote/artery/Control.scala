@@ -21,15 +21,21 @@ import akka.stream.stage.InHandler
 import akka.stream.stage.OutHandler
 
 /**
- * Marker trait for reply messages
+ * INTERNAL API: Marker trait for reply messages
  */
-trait Reply extends ControlMessage
+private[akka] trait Reply extends ControlMessage
 
 /**
+ * INTERNAL API
  * Marker trait for control messages that can be sent via the system message sub-channel
  * but don't need full reliable delivery. E.g. `HandshakeReq` and `Reply`.
  */
-trait ControlMessage
+private[akka] trait ControlMessage
+
+/**
+ * INTERNAL API
+ */
+private[akka] case object Quarantined extends ControlMessage // FIXME serialization
 
 /**
  * INTERNAL API

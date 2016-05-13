@@ -3,6 +3,7 @@
  */
 package akka.remote.artery
 
+import scala.annotation.tailrec
 import scala.concurrent.Promise
 import scala.util.Success
 import akka.actor.ActorRef
@@ -63,8 +64,7 @@ private[akka] class Association(
    * Holds reference to shared state of Association - *access only via helper methods*
    */
   @volatile
-  private[this] var _sharedStateDoNotCallMeDirectly: AssociationState =
-    new AssociationState(incarnation = 1, uniqueRemoteAddressPromise = Promise())
+  private[this] var _sharedStateDoNotCallMeDirectly: AssociationState = AssociationState()
 
   /**
    * Helper method for access to underlying state via Unsafe
@@ -91,14 +91,14 @@ private[akka] class Association(
     current.uniqueRemoteAddress.value match {
       case Some(Success(`peer`)) ⇒ // our value
       case _ ⇒
-        val newState = new AssociationState(incarnation = current.incarnation + 1, Promise.successful(peer))
+        val newState = current.newIncarnation(Promise.successful(peer))
         if (swapState(current, newState)) {
           current.uniqueRemoteAddress.value match {
             case Some(Success(old)) ⇒
               log.debug("Incarnation {} of association to [{}] with new UID [{}] (old UID [{}])",
                 newState.incarnation, peer.address, peer.uid, old.uid)
-              quarantine(Some(old.uid))
-            case _ ⇒ // Failed, nothing to do
+            case _ ⇒
+            // Failed, nothing to do
           }
           // if swap failed someone else completed before us, and that is fine
         }
@@ -129,10 +129,30 @@ private[akka] class Association(
   override val dummyRecipient: RemoteActorRef =
     transport.provider.resolveActorRef(RootActorPath(remoteAddress) / "system" / "dummy").asInstanceOf[RemoteActorRef]
 
-  def quarantine(uid: Option[Int]): Unit = {
-    // FIXME implement
-    log.error("Association to [{}] with UID [{}] is irrecoverably failed. Quarantining address.",
-      remoteAddress, uid.getOrElse("unknown"))
+  @tailrec final def quarantine(uid: Option[Int]): Unit = {
+    uid match {
+      case Some(u) ⇒
+        val current = associationState
+        current.uniqueRemoteAddress.value match {
+          case Some(Success(peer)) if peer.uid == u ⇒
+            val newState = current.newQuarantined()
+            if (swapState(current, newState))
+              log.warning("Association to [{}] with UID [{}] is irrecoverably failed. Quarantining address.",
+                remoteAddress, u)
+            else
+              quarantine(uid) // recursive
+          case Some(Success(peer)) ⇒
+            log.debug("Quarantine of [{}] ignored due to non-matching UID, quarantine requested for [{}] but current is [{}]",
+              remoteAddress, u, peer.uid)
+          case None ⇒
+            log.debug("Quarantine of [{}] ignored because handshake not completed, quarantine request was for old incarnation",
+              remoteAddress)
+        }
+      case None ⇒
+        // FIXME should we do something more, old impl used gating?
+        log.warning("Quarantine of [{}] ignored because unknown UID", remoteAddress)
+    }
+
   }
 
   // Idempotent
